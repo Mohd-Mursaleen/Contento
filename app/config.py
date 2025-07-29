@@ -18,8 +18,8 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     
     # Supabase Configuration
-    supabase_url: str = os.getenv("PUBLIC_SUPABASE_URL", "")
-    supabase_anon_key: str = os.getenv("PUBLIC_SUPABASE_ANON_KEY", "")
+    supabase_url: str = os.getenv("PUBLIC_SUPABASE_URL", "https://qksafoxtjhmxllfsyvxo.supabase.co")
+    supabase_anon_key: str = os.getenv("PUBLIC_SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFrc2Fmb3h0amhteGxsZnN5dnhvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM3Njc5NjUsImV4cCI6MjA2OTM0Mzk2NX0.dXtoPO7G70F6a7tI9hMGchsZM0ncnokJOkOpUrUrpWc")
     
     # Rate Limiting
     rate_limit_requests: int = 10
