@@ -1,3 +1,5 @@
+This project was created as a learning exercise to understand how multiple AI agents work together through orchestration. It demonstrates the coordination between different specialized agents (Research and Writer) and how they can be orchestrated to create a cohesive content creation pipeline, providing insights into multi-agent system architecture and workflow management.
+
 # Content Creation Pipeline MVP
 
 A simple but robust MVP implementation of an AI-powered content creation pipeline using multi-agent architecture.
@@ -239,3 +241,5 @@ For questions or issues:
 1. Check the API documentation at `/docs`
 2. Review the test files for usage examples
 3. Check logs for detailed error information
+
+
