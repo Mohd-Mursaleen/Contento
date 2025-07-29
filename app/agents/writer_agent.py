@@ -60,7 +60,7 @@ class WriterAgent(BaseAgent):
             
             return {
                 "status": "success",
-                "writing_output": writing_output.dict()
+                "writing_output": writing_output.model_dump()
             }
             
         except Exception as e:

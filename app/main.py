@@ -4,9 +4,12 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any
 import time
+import uuid
+from datetime import datetime
 from app.config import settings
 from app.models.content import ContentRequest, ContentType, ContentStatus
 from app.core.orchestrator import ContentOrchestrator
+from app.services.database_service import DatabaseService
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -24,11 +27,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize orchestrator
+# Initialize services
 orchestrator = ContentOrchestrator()
-
-# In-memory storage for demo (replace with database in production)
-content_store: Dict[str, Dict[str, Any]] = {}
+db_service = DatabaseService()
 
 
 @app.get("/")
@@ -50,10 +51,12 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
+    db_healthy = await db_service.health_check()
     return {
-        "status": "healthy",
+        "status": "healthy" if db_healthy else "unhealthy",
         "timestamp": time.time(),
-        "version": settings.app_version
+        "version": settings.app_version,
+        "database": "connected" if db_healthy else "disconnected"
     }
 
 
@@ -62,8 +65,8 @@ async def create_content(request: ContentRequest, background_tasks: BackgroundTa
     """Create new content using the AI pipeline."""
     
     try:
-        # Generate unique request ID
-        request_id = f"content_{int(time.time() * 1000)}"
+        # Generate unique request ID as UUID
+        request_id = str(uuid.uuid4())
         request.id = request_id
         
         # Validate request
@@ -76,13 +79,8 @@ async def create_content(request: ContentRequest, background_tasks: BackgroundTa
                 detail=f"Word count must be between 100 and {settings.max_content_length}"
             )
         
-        # Store initial request
-        content_store[request_id] = {
-            "request": request.dict(),
-            "status": ContentStatus.PENDING,
-            "created_at": time.time(),
-            "result": None
-        }
+        # Store initial request in database
+        await db_service.create_content_request(request)
         
         # Start content creation in background
         background_tasks.add_task(process_content_creation, request_id, request)
@@ -104,17 +102,47 @@ async def create_content(request: ContentRequest, background_tasks: BackgroundTa
 async def get_content(content_id: str):
     """Get created content by ID."""
     
-    if content_id not in content_store:
-        raise HTTPException(status_code=404, detail="Content not found")
+    # Try to get content piece first
+    content_data = await db_service.get_content_piece(content_id)
     
-    content_data = content_store[content_id]
+    if not content_data:
+        # If not found as content piece, try as request ID
+        request_data = await db_service.get_content_request(content_id)
+        if not request_data:
+            raise HTTPException(status_code=404, detail="Content not found")
+        
+        # Get associated content pieces
+        content_pieces = await db_service.get_content_pieces_by_request(content_id)
+        
+        return {
+            "content_id": content_id,
+            "status": request_data["status"],
+            "created_at": request_data["created_at"],
+            "request": request_data,
+            "content_pieces": content_pieces
+        }
+    
+    # Get associated request
+    request_data = await db_service.get_content_request(content_data["request_id"]) if content_data.get("request_id") else None
     
     return {
         "content_id": content_id,
         "status": content_data["status"],
         "created_at": content_data["created_at"],
-        "request": content_data["request"],
-        "result": content_data["result"]
+        "request": request_data,
+        "result": {
+            "status": "success" if content_data["status"] == ContentStatus.COMPLETED else "processing",
+            "content": {
+                "title": content_data["title"],
+                "content": content_data["content"],
+                "metadata": content_data["metadata"],
+                "quality_metrics": {
+                    "overall_quality": content_data["quality_score"],
+                    "seo_score": content_data["seo_score"],
+                    "fact_check_score": content_data["fact_check_score"]
+                }
+            }
+        }
     }
 
 
@@ -122,22 +150,26 @@ async def get_content(content_id: str):
 async def get_content_status(content_id: str):
     """Get content creation status."""
     
-    if content_id not in content_store:
-        raise HTTPException(status_code=404, detail="Content not found")
-    
-    # Try to get real-time status from orchestrator
+    # Try to get real-time status from orchestrator first
     task_status = await orchestrator.get_task_status(content_id)
     
     if "error" not in task_status:
         return task_status
     
-    # Fallback to stored status
-    content_data = content_store[content_id]
+    # Fallback to database status
+    request_data = await db_service.get_content_request(content_id)
+    
+    if not request_data:
+        raise HTTPException(status_code=404, detail="Content not found")
+    
+    created_at = datetime.fromisoformat(request_data["created_at"].replace('Z', '+00:00'))
+    elapsed_time = (datetime.utcnow() - created_at.replace(tzinfo=None)).total_seconds()
+    
     return {
         "request_id": content_id,
-        "status": content_data["status"],
-        "progress": 100 if content_data["status"] == ContentStatus.COMPLETED else 0,
-        "elapsed_time": time.time() - content_data["created_at"]
+        "status": request_data["status"],
+        "progress": 100 if request_data["status"] == ContentStatus.COMPLETED else 0,
+        "elapsed_time": elapsed_time
     }
 
 
@@ -145,14 +177,16 @@ async def get_content_status(content_id: str):
 async def cancel_content_creation(content_id: str):
     """Cancel content creation task."""
     
-    if content_id not in content_store:
+    request_data = await db_service.get_content_request(content_id)
+    
+    if not request_data:
         raise HTTPException(status_code=404, detail="Content not found")
     
     # Try to cancel in orchestrator
     cancel_result = await orchestrator.cancel_task(content_id)
     
-    # Update stored status
-    content_store[content_id]["status"] = ContentStatus.FAILED
+    # Update database status
+    await db_service.update_content_request_status(content_id, ContentStatus.FAILED)
     
     return {
         "message": "Content creation cancelled",
@@ -162,28 +196,25 @@ async def cancel_content_creation(content_id: str):
 
 
 @app.get("/api/v1/content")
-async def list_content(limit: int = 10, offset: int = 0):
+async def list_content(limit: int = 10, offset: int = 0, user_id: str = None):
     """List all content with pagination."""
     
-    all_content = list(content_store.items())
-    total = len(all_content)
-    
-    # Simple pagination
-    paginated = all_content[offset:offset + limit]
+    result = await db_service.list_content_requests(user_id=user_id, limit=limit, offset=offset)
     
     return {
-        "total": total,
+        "total": result["total"],
         "limit": limit,
         "offset": offset,
         "content": [
             {
-                "content_id": content_id,
-                "status": data["status"],
-                "topic": data["request"]["topic"],
-                "content_type": data["request"]["content_type"],
-                "created_at": data["created_at"]
+                "content_id": item["id"],
+                "status": item["status"],
+                "topic": item["topic"],
+                "content_type": item["content_type"],
+                "target_audience": item["target_audience"],
+                "created_at": item["created_at"]
             }
-            for content_id, data in paginated
+            for item in result["data"]
         ]
     }
 
@@ -192,18 +223,7 @@ async def list_content(limit: int = 10, offset: int = 0):
 async def get_stats():
     """Get system statistics."""
     
-    total_requests = len(content_store)
-    completed = sum(1 for data in content_store.values() if data["status"] == ContentStatus.COMPLETED)
-    failed = sum(1 for data in content_store.values() if data["status"] == ContentStatus.FAILED)
-    pending = sum(1 for data in content_store.values() if data["status"] in [ContentStatus.PENDING, ContentStatus.PROCESSING])
-    
-    return {
-        "total_requests": total_requests,
-        "completed": completed,
-        "failed": failed,
-        "pending": pending,
-        "success_rate": (completed / total_requests * 100) if total_requests > 0 else 0
-    }
+    return await db_service.get_content_stats()
 
 
 async def process_content_creation(request_id: str, request: ContentRequest):
@@ -211,26 +231,37 @@ async def process_content_creation(request_id: str, request: ContentRequest):
     
     try:
         # Update status to processing
-        content_store[request_id]["status"] = ContentStatus.PROCESSING
+        await db_service.update_content_request_status(request_id, ContentStatus.PROCESSING)
         
         # Execute content creation pipeline
         result = await orchestrator.create_content(request)
         
-        # Update stored result
+        # Store result in database
         if result["status"] == "success":
-            content_store[request_id]["status"] = ContentStatus.COMPLETED
-            content_store[request_id]["result"] = result
+            content_data = result["content"]
+            
+            # Create content piece record
+            content_piece_data = {
+                "request_id": request_id,
+                "title": content_data.get("title"),
+                "content": content_data.get("content"),
+                "metadata": content_data.get("metadata", {}),
+                "quality_score": content_data.get("quality_metrics", {}).get("overall_quality", 0.0),
+                "seo_score": content_data.get("quality_metrics", {}).get("seo_score", 0.0),
+                "fact_check_score": content_data.get("quality_metrics", {}).get("fact_check_score", 0.0),
+                "status": ContentStatus.COMPLETED
+            }
+            
+            await db_service.create_content_piece(content_piece_data)
+            await db_service.update_content_request_status(request_id, ContentStatus.COMPLETED)
+            
         else:
-            content_store[request_id]["status"] = ContentStatus.FAILED
-            content_store[request_id]["result"] = result
+            await db_service.update_content_request_status(request_id, ContentStatus.FAILED)
             
     except Exception as e:
         # Handle any unexpected errors
-        content_store[request_id]["status"] = ContentStatus.FAILED
-        content_store[request_id]["result"] = {
-            "status": "error",
-            "message": f"Unexpected error: {str(e)}"
-        }
+        await db_service.update_content_request_status(request_id, ContentStatus.FAILED)
+        print(f"Content creation failed for {request_id}: {str(e)}")
 
 
 if __name__ == "__main__":

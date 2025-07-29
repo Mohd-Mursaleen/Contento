@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_model: str = "gpt-4o-mini"
     
+    # Supabase Configuration
+    supabase_url: str = os.getenv("PUBLIC_SUPABASE_URL", "")
+    supabase_anon_key: str = os.getenv("PUBLIC_SUPABASE_ANON_KEY", "")
+    
     # Rate Limiting
     rate_limit_requests: int = 10
     rate_limit_window: int = 3600  # 1 hour

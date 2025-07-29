@@ -53,7 +53,7 @@ class ResearchAgent(BaseAgent):
             return {
                 "status": "error",
                 "message": str(e),
-                "research_data": ResearchData().dict()
+                "research_data": ResearchData().model_dump()
             }
     
     async def validate_input(self, input_data: Dict[str, Any]) -> bool:
@@ -144,7 +144,7 @@ class ResearchAgent(BaseAgent):
     async def _structure_findings(self, sources: List[Dict[str, Any]], topic: str) -> Dict[str, Any]:
         """Structure research findings using AI."""
         if not sources:
-            return ResearchData().dict()
+            return ResearchData().model_dump()
         
         # Combine content from sources
         combined_content = "\n\n".join([
